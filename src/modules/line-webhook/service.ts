@@ -15,24 +15,68 @@ export type GeminiConfig = {
 
 const LINE_REPLY_API = 'https://api.line.me/v2/bot/message/reply'
 
-class MessageStore {
-  private history = new Map<string, MessageEntry[]>()
+type ConversationBucket = {
+  items: MessageEntry[]
+  lastSeen: number
+}
 
-  constructor(private limit: number) {}
+class MessageStore {
+  private history = new Map<string, ConversationBucket>()
+
+  constructor(
+    private limit: number,
+    private ttlMs: number,
+    private maxConversations: number
+  ) {}
 
   add(conversationId: string, entry: MessageEntry) {
-    const items = this.history.get(conversationId) ?? []
-    items.push(entry)
-    if (items.length > this.limit) {
-      items.splice(0, items.length - this.limit)
+    const now = Date.now()
+    this.cleanup(now)
+
+    const bucket = this.history.get(conversationId) ?? { items: [], lastSeen: now }
+    bucket.items.push(entry)
+    bucket.lastSeen = now
+
+    if (bucket.items.length > this.limit) {
+      bucket.items.splice(0, bucket.items.length - this.limit)
     }
-    this.history.set(conversationId, items)
+
+    this.history.delete(conversationId)
+    this.history.set(conversationId, bucket)
   }
 
   getRecent(conversationId: string, limit: number): MessageEntry[] {
-    const items = this.history.get(conversationId) ?? []
+    const now = Date.now()
+    this.cleanup(now)
+
+    const bucket = this.history.get(conversationId)
+    if (!bucket) return []
+
+    bucket.lastSeen = now
+    this.history.delete(conversationId)
+    this.history.set(conversationId, bucket)
+
+    const items = bucket.items
     if (items.length <= limit) return items
     return items.slice(items.length - limit)
+  }
+
+  private cleanup(now: number) {
+    if (this.ttlMs > 0) {
+      for (const [key, bucket] of this.history.entries()) {
+        if (now - bucket.lastSeen > this.ttlMs) {
+          this.history.delete(key)
+        }
+      }
+    }
+
+    if (this.maxConversations > 0) {
+      while (this.history.size > this.maxConversations) {
+        const oldestKey = this.history.keys().next().value
+        if (!oldestKey) break
+        this.history.delete(oldestKey)
+      }
+    }
   }
 }
 
@@ -137,9 +181,12 @@ export class LineWebhookService {
     private lineConfig: LineConfig,
     private geminiConfig: GeminiConfig,
     private summaryLimit: number,
-    historyLimit: number
+    historyLimit: number,
+    conversationTtlMinutes: number,
+    maxConversations: number
   ) {
-    this.store = new MessageStore(historyLimit)
+    const ttlMs = conversationTtlMinutes > 0 ? conversationTtlMinutes * 60_000 : 0
+    this.store = new MessageStore(historyLimit, ttlMs, maxConversations)
     this.lineClient = new LineClient(lineConfig.channelAccessToken)
     this.gemini = new GeminiClient(geminiConfig)
   }

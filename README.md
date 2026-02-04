@@ -19,6 +19,8 @@ Optional:
 - `GEMINI_MODEL` (default `gemini-2.5-flash`)
 - `SUMMARY_LIMIT` (default `80`)
 - `HISTORY_LIMIT` (default `120`)
+- `CONVERSATION_TTL_MINUTES` (default `1440`, set `0` to disable)
+- `MAX_CONVERSATIONS` (default `500`, set `0` to disable)
 - `DEFAULT_TIMEZONE` (default `Asia/Bangkok`)
 
 ## Run
@@ -29,5 +31,6 @@ bun run dev
 
 ## Notes
 - Message history is stored in memory only. Use a database or cache for production.
+- In-memory cleanup evicts inactive conversations by TTL and caps total conversations.
 - `/event` returns a calendar link when date/time is detected.
 - `/research` answers from the model only (no live web search).

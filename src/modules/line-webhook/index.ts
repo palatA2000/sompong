@@ -14,7 +14,9 @@ const service = new LineWebhookService(
     defaultTimezone: config.defaultTimezone
   },
   config.summaryLimit,
-  config.historyLimit
+  config.historyLimit,
+  config.conversationTtlMinutes,
+  config.maxConversations
 )
 
 export const lineWebhook = new Elysia({ name: 'line-webhook' })

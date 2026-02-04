@@ -20,5 +20,7 @@ export const config = {
   geminiModel: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
   summaryLimit: parseNumber(process.env.SUMMARY_LIMIT, 80),
   historyLimit: parseNumber(process.env.HISTORY_LIMIT, 120),
+  conversationTtlMinutes: parseNumber(process.env.CONVERSATION_TTL_MINUTES, 24 * 60),
+  maxConversations: parseNumber(process.env.MAX_CONVERSATIONS, 500),
   defaultTimezone: process.env.DEFAULT_TIMEZONE ?? 'Asia/Bangkok'
 }
