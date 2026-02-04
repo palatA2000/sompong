@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'crypto'
 import { GoogleGenAI } from '@google/genai'
-import type { LineWebhookBody, LineWebhookEvent, LineTextMessage, MessageEntry } from './model'
+import type { LineWebhookBody, LineWebhookEvent, LineTextMessage, MessageEntry } from './model.js'
 
 export type LineConfig = {
   channelSecret: string

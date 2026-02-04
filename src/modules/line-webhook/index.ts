@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia'
-import { LineWebhookBody } from './model'
-import { LineWebhookService } from './service'
-import { config } from '../../config'
+import { LineWebhookBody } from './model.js'
+import { LineWebhookService } from './service.js'
+import { config } from '../../config.js'
 
 const service = new LineWebhookService(
   {

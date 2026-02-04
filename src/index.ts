@@ -1,6 +1,6 @@
 import { Elysia } from 'elysia'
-import { config } from './config'
-import { lineWebhook } from './modules/line-webhook'
+import { config } from './config.js'
+import { lineWebhook } from './modules/line-webhook/index.js'
 
 const app = new Elysia()
   .use(lineWebhook)
