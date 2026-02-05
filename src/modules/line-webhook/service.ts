@@ -236,7 +236,11 @@ export class LineWebhookService {
 
   async handleWebhook(payload: LineWebhookBody) {
     for (const event of payload.events) {
-      await this.handleEvent(event);
+      try {
+        await this.handleEvent(event);
+      } catch (err) {
+        console.error("Error handling event:", err, event);
+      }
     }
   }
 
@@ -346,7 +350,6 @@ export class LineWebhookService {
       "ใช้ผลค้นเว็บจาก Google Search ที่ระบบให้มาเป็นหลัก",
       "ตอบเป็นภาษาไทย กระชับ และจัดเป็นหัวข้อ",
       "ถ้าข้อมูลอัปเดตยังไม่ชัดเจน ให้บอกความไม่แน่นอนอย่างตรงไปตรงมา",
-      "ถ้าข้อมูลยังไม่พอ ให้ถามกลับอย่างน้อย 1-2 คำถามเพื่อขอรายละเอียดเพิ่ม",
       "",
       `คำถาม: ${query}`,
       "",
