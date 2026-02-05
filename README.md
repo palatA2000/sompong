@@ -1,8 +1,9 @@
 # LINE Webhook + Gemini (ElysiaJS)
 
 A minimal ElysiaJS webhook server for LINE Messaging API that uses Gemini to:
+- Show available commands with `/help`
+- Tell a short playful fortune with `/fortune`
 - Summarize group chat with `/summary`
-- Suggest event details with `/event` or `/poll`
 - Answer questions with `/research`
 
 ## Endpoints
@@ -32,5 +33,4 @@ bun run dev
 ## Notes
 - Message history is stored in memory only. Use a database or cache for production.
 - In-memory cleanup evicts inactive conversations by TTL and caps total conversations.
-- `/event` returns a calendar link when date/time is detected.
 - `/research` answers from the model only (no live web search).

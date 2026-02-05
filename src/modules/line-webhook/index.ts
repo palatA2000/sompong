@@ -1,52 +1,53 @@
-import { Elysia } from 'elysia'
-import { LineWebhookBody } from './model.js'
-import { LineWebhookService } from './service.js'
-import { config } from '../../config.js'
+import { Elysia } from "elysia";
+import { LineWebhookBody } from "./model.js";
+import { LineWebhookService } from "./service.js";
+import { config } from "../../config.js";
 
 const service = new LineWebhookService(
   {
     channelSecret: config.lineChannelSecret,
-    channelAccessToken: config.lineChannelAccessToken
+    channelAccessToken: config.lineChannelAccessToken,
   },
   {
     apiKey: config.geminiApiKey,
     model: config.geminiModel,
-    defaultTimezone: config.defaultTimezone
+    defaultTimezone: config.defaultTimezone,
   },
   config.summaryLimit,
   config.historyLimit,
   config.conversationTtlMinutes,
-  config.maxConversations
-)
+  config.maxConversations,
+);
 
-export const lineWebhook = new Elysia({ name: 'line-webhook' })
+export const lineWebhook = new Elysia({ name: "line-webhook" })
   .onParse(({ contentType, request }) => {
-    if (contentType?.includes('application/json')) {
-      return request.text()
+    if (contentType?.includes("application/json")) {
+      return request.text();
     }
   })
-  .post('/webhook/line', async ({ body, headers, set }) => {
-    const rawBody = typeof body === 'string' ? body : JSON.stringify(body)
-    const signature = headers['x-line-signature'] ?? headers['X-Line-Signature']
+  .post("/webhook/line", async ({ body, headers, set }) => {
+    const rawBody = typeof body === "string" ? body : JSON.stringify(body);
+    const signature =
+      headers["x-line-signature"] ?? headers["X-Line-Signature"];
 
     if (!service.verifySignature(rawBody, signature)) {
-      set.status = 401
-      return { ok: false, error: 'Invalid signature' }
+      set.status = 401;
+      return { ok: false, error: "Invalid signature" };
     }
 
-    let payload: LineWebhookBody
+    let payload: LineWebhookBody;
     try {
-      payload = JSON.parse(rawBody) as LineWebhookBody
+      payload = JSON.parse(rawBody) as LineWebhookBody;
     } catch {
-      set.status = 400
-      return { ok: false, error: 'Invalid JSON body' }
+      set.status = 400;
+      return { ok: false, error: "Invalid JSON body" };
     }
 
     if (!payload.events || !Array.isArray(payload.events)) {
-      set.status = 400
-      return { ok: false, error: 'Invalid webhook payload' }
+      set.status = 400;
+      return { ok: false, error: "Invalid webhook payload" };
     }
 
-    await service.handleWebhook(payload)
-    return { ok: true }
-  })
+    await service.handleWebhook(payload);
+    return { ok: true };
+  });
