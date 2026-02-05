@@ -25,7 +25,7 @@ const HELP_TEXT = [
   "/help - แสดงรายการคำสั่ง",
   "/fortune - ดูดวงสั้นๆ",
   "/summary - สรุปบทสนทนาล่าสุด",
-  "/research <คำถาม> - ช่วยตอบคำถามจากบริบทในแชต",
+  "/research <คำถาม> - ค้นเว็บและสรุปคำตอบพร้อมอ้างอิง",
 ].join("\n");
 
 type ConversationBucket = {
@@ -133,15 +133,53 @@ class GeminiClient {
       contents: prompt,
     });
 
-    console.log(response.text, "response.text");
+    return this.extractText(response);
+  }
+
+  async generateTextWithSearch(prompt: string) {
+    const response = await this.ai.models.generateContent({
+      model: this.config.model,
+      contents: prompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+      },
+    });
+
+    return {
+      text: this.extractText(response),
+      sources: this.extractWebSources(response),
+    };
+  }
+
+  private extractText(response: {
+    text?: string;
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  }) {
     if (typeof response.text === "string") return response.text;
-    const candidateText = (
-      response as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      }
-    )?.candidates?.[0]?.content?.parts?.[0]?.text;
-    console.log(candidateText, "candidateText");
+    const candidateText = response.candidates?.[0]?.content?.parts?.[0]?.text;
     return typeof candidateText === "string" ? candidateText : "";
+  }
+
+  private extractWebSources(response: {
+    candidates?: Array<{
+      groundingMetadata?: {
+        groundingChunks?: Array<{ web?: { uri?: string } }>;
+      };
+    }>;
+  }) {
+    const sources: string[] = [];
+    const seen = new Set<string>();
+
+    for (const candidate of response.candidates ?? []) {
+      for (const chunk of candidate.groundingMetadata?.groundingChunks ?? []) {
+        const uri = chunk.web?.uri;
+        if (!uri || seen.has(uri)) continue;
+        seen.add(uri);
+        sources.push(uri);
+      }
+    }
+
+    return sources;
   }
 }
 
@@ -304,10 +342,11 @@ export class LineWebhookService {
     const history = this.store.getRecent(conversationId, 30);
 
     const prompt = [
-      "คุณคือผู้ช่วยหาข้อมูลและตัดสินใจจากบทสนทนาในกลุ่ม LINE",
+      "คุณคือผู้ช่วยหาข้อมูลจากเว็บและช่วยตัดสินใจในกลุ่ม LINE",
+      "ใช้ผลค้นเว็บจาก Google Search ที่ระบบให้มาเป็นหลัก",
       "ตอบเป็นภาษาไทย กระชับ และจัดเป็นหัวข้อ",
-      "ห้ามสร้างข้อมูลอ้างอิงจากเว็บ เพราะคุณไม่มีการท่องเว็บ ให้ตอบจากความรู้ทั่วไปเท่านั้น",
-      "ถ้าข้อมูลไม่พอ ให้ถามกลับอย่างน้อย 1-2 คำถามเพื่อขอรายละเอียดเพิ่ม",
+      "ถ้าข้อมูลอัปเดตยังไม่ชัดเจน ให้บอกความไม่แน่นอนอย่างตรงไปตรงมา",
+      "ถ้าข้อมูลยังไม่พอ ให้ถามกลับอย่างน้อย 1-2 คำถามเพื่อขอรายละเอียดเพิ่ม",
       "",
       `คำถาม: ${query}`,
       "",
@@ -315,10 +354,17 @@ export class LineWebhookService {
       formatMessages(history),
     ].join("\n");
 
-    const response = await this.gemini.generateText(prompt);
+    const response = await this.gemini.generateTextWithSearch(prompt);
     const answer =
-      response.trim() || "ยังตอบไม่ได้ ลองถามใหม่พร้อมรายละเอียดเพิ่มเติม";
+      response.text.trim() || "ยังตอบไม่ได้ ลองถามใหม่พร้อมรายละเอียดเพิ่มเติม";
+    const sources =
+      response.sources.length > 0
+        ? `\n\nอ้างอิงจากเว็บ:\n${response.sources
+            .slice(0, 2)
+            .map((source, index) => `${index + 1}. ${source}`)
+            .join("\n")}`
+        : "";
 
-    await this.lineClient.replyText(event.replyToken!, answer);
+    await this.lineClient.replyText(event.replyToken!, `${answer}${sources}`);
   }
 }
