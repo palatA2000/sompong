@@ -35,6 +35,7 @@ export type LineTextMessage = {
 
 export type MessageEntry = {
   userId?: string
+  displayName?: string
   text: string
   timestamp: number
 }

@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { GoogleGenAI } from "@google/genai";
+import { Kysely } from "kysely";
+import type { Database } from "../../db/types.js";
 import type {
   LineWebhookBody,
   LineWebhookEvent,
@@ -19,6 +21,11 @@ export type GeminiConfig = {
 };
 
 const LINE_REPLY_API = "https://api.line.me/v2/bot/message/reply";
+const LINE_USER_PROFILE_API = "https://api.line.me/v2/bot/profile";
+const LINE_GROUP_MEMBER_PROFILE_API = "https://api.line.me/v2/bot/group";
+const LINE_GROUP_SUMMARY_API = "https://api.line.me/v2/bot/group";
+const LINE_ROOM_MEMBER_PROFILE_API = "https://api.line.me/v2/bot/room";
+const PROFILE_CACHE_TTL_MS = 30 * 60_000;
 
 const HELP_TEXT = [
   "คำสั่งที่ใช้งานได้:",
@@ -28,75 +35,183 @@ const HELP_TEXT = [
   "/research <คำถาม> - ค้นเว็บและสรุปคำตอบพร้อมอ้างอิง",
 ].join("\n");
 
-type ConversationBucket = {
-  items: MessageEntry[];
-  lastSeen: number;
+type ConversationSourceType = "group" | "room" | "user" | "unknown";
+
+type ConversationContext = {
+  conversationId: string;
+  sourceType: ConversationSourceType;
+  sourceId: string | null;
+};
+
+type GroupSummaryEntry = {
+  groupId: string;
+  groupName?: string;
+  pictureUrl?: string;
 };
 
 class MessageStore {
-  private history = new Map<string, ConversationBucket>();
+  constructor(private db: Kysely<Database>) {}
 
-  constructor(
-    private limit: number,
-    private ttlMs: number,
-    private maxConversations: number,
-  ) {}
+  async add(
+    context: ConversationContext,
+    entry: MessageEntry,
+    group?: GroupSummaryEntry,
+  ) {
+    const userId = await this.upsertUser(entry.userId, entry.displayName);
+    const groupId = await this.upsertGroup(context, group);
+    const chatId = await this.upsertChat(context, groupId);
 
-  add(conversationId: string, entry: MessageEntry) {
-    const now = Date.now();
-    this.cleanup(now);
-
-    const bucket = this.history.get(conversationId) ?? {
-      items: [],
-      lastSeen: now,
-    };
-    bucket.items.push(entry);
-    bucket.lastSeen = now;
-
-    if (bucket.items.length > this.limit) {
-      bucket.items.splice(0, bucket.items.length - this.limit);
-    }
-
-    this.history.delete(conversationId);
-    this.history.set(conversationId, bucket);
+    await this.db
+      .insertInto("chat_messages")
+      .values({
+        chat_id: chatId,
+        user_id: userId,
+        text: entry.text,
+        sent_at: new Date(entry.timestamp),
+      })
+      .execute();
   }
 
-  getRecent(conversationId: string, limit: number): MessageEntry[] {
-    const now = Date.now();
-    this.cleanup(now);
+  async getRecent(
+    conversationId: string,
+    limit: number,
+  ): Promise<MessageEntry[]> {
+    await this.touchConversation(conversationId);
 
-    const bucket = this.history.get(conversationId);
-    if (!bucket) return [];
+    const rows = await this.db
+      .selectFrom("chat_messages")
+      .innerJoin("chats", "chats.id", "chat_messages.chat_id")
+      .leftJoin("users", "users.id", "chat_messages.user_id")
+      .select([
+        "chat_messages.text as text",
+        "chat_messages.sent_at as sent_at",
+        "users.display_name as display_name",
+      ])
+      .where("chats.conversation_id", "=", conversationId)
+      .orderBy("chat_messages.sent_at", "desc")
+      .orderBy("chat_messages.id", "desc")
+      .limit(limit)
+      .execute();
 
-    bucket.lastSeen = now;
-    this.history.delete(conversationId);
-    this.history.set(conversationId, bucket);
-
-    const items = bucket.items;
-    if (items.length <= limit) return items;
-    return items.slice(items.length - limit);
+    return rows.reverse().map((row) => ({
+      text: row.text,
+      displayName: row.display_name ?? undefined,
+      timestamp: row.sent_at.getTime(),
+    }));
   }
 
-  private cleanup(now: number) {
-    if (this.ttlMs > 0) {
-      for (const [key, bucket] of this.history.entries()) {
-        if (now - bucket.lastSeen > this.ttlMs) {
-          this.history.delete(key);
-        }
-      }
-    }
+  private async upsertUser(
+    lineUserId: string | undefined,
+    displayName?: string,
+  ): Promise<number | null> {
+    if (!lineUserId) return null;
 
-    if (this.maxConversations > 0) {
-      while (this.history.size > this.maxConversations) {
-        const oldestKey = this.history.keys().next().value;
-        if (!oldestKey) break;
-        this.history.delete(oldestKey);
-      }
-    }
+    const now = new Date();
+    const user = await this.db
+      .insertInto("users")
+      .values({
+        line_user_id: lineUserId,
+        display_name: displayName ?? null,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.column("line_user_id").doUpdateSet({
+          ...(displayName !== undefined ? { display_name: displayName } : {}),
+          updated_at: now,
+        }),
+      )
+      .returning("id")
+      .executeTakeFirstOrThrow();
+
+    return user.id;
+  }
+
+  private async upsertGroup(
+    context: ConversationContext,
+    group?: GroupSummaryEntry,
+  ): Promise<number | null> {
+    if (context.sourceType !== "group" || !context.sourceId) return null;
+
+    const now = new Date();
+    const groupRecord = await this.db
+      .insertInto("groups")
+      .values({
+        line_group_id: context.sourceId,
+        group_name: group?.groupName ?? null,
+        picture_url: group?.pictureUrl ?? null,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.column("line_group_id").doUpdateSet({
+          ...(group?.groupName !== undefined
+            ? { group_name: group.groupName }
+            : {}),
+          ...(group?.pictureUrl !== undefined
+            ? { picture_url: group.pictureUrl }
+            : {}),
+          updated_at: now,
+        }),
+      )
+      .returning("id")
+      .executeTakeFirstOrThrow();
+
+    return groupRecord.id;
+  }
+
+  private async upsertChat(
+    context: ConversationContext,
+    groupId: number | null,
+  ): Promise<number> {
+    const now = new Date();
+    const chat = await this.db
+      .insertInto("chats")
+      .values({
+        conversation_id: context.conversationId,
+        source_type: context.sourceType,
+        source_id: context.sourceId,
+        group_id: groupId,
+        last_message_at: now,
+        updated_at: now,
+      })
+      .onConflict((oc) =>
+        oc.column("conversation_id").doUpdateSet({
+          source_type: context.sourceType,
+          source_id: context.sourceId,
+          group_id: groupId,
+          last_message_at: now,
+          updated_at: now,
+        }),
+      )
+      .returning("id")
+      .executeTakeFirstOrThrow();
+
+    return chat.id;
+  }
+
+  private async touchConversation(conversationId: string) {
+    const now = new Date();
+
+    await this.db
+      .updateTable("chats")
+      .set({
+        last_message_at: now,
+        updated_at: now,
+      })
+      .where("conversation_id", "=", conversationId)
+      .execute();
   }
 }
 
 class LineClient {
+  private profileCache = new Map<
+    string,
+    { displayName: string; expiresAt: number }
+  >();
+  private groupSummaryCache = new Map<
+    string,
+    { summary: GroupSummaryEntry; expiresAt: number }
+  >();
+
   constructor(private accessToken: string) {}
 
   async replyText(replyToken: string, text: string) {
@@ -117,6 +232,105 @@ class LineClient {
       const errorBody = await response.text();
       throw new Error(`LINE reply failed: ${response.status} ${errorBody}`);
     }
+  }
+
+  async getDisplayName(event: LineWebhookEvent): Promise<string | undefined> {
+    const userId = event.source.userId;
+    if (!userId) return undefined;
+
+    const profilePath = this.buildProfilePath(event, userId);
+    if (!profilePath) return undefined;
+
+    const cacheKey = `${profilePath}|${userId}`;
+    const cached = this.profileCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) {
+      return cached.displayName;
+    }
+
+    const response = await fetch(profilePath, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      return undefined;
+    }
+
+    const body = (await response.json()) as { displayName?: string };
+    const displayName = body.displayName?.trim();
+    if (!displayName) return undefined;
+
+    this.profileCache.set(cacheKey, {
+      displayName,
+      expiresAt: now + PROFILE_CACHE_TTL_MS,
+    });
+
+    return displayName;
+  }
+
+  async getGroupSummary(
+    groupId: string,
+  ): Promise<GroupSummaryEntry | undefined> {
+    const cached = this.groupSummaryCache.get(groupId);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) {
+      return cached.summary;
+    }
+
+    const encodedGroupId = encodeURIComponent(groupId);
+    const response = await fetch(
+      `${LINE_GROUP_SUMMARY_API}/${encodedGroupId}/summary`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      return undefined;
+    }
+
+    const body = (await response.json()) as {
+      groupName?: string;
+      pictureUrl?: string;
+    };
+
+    const summary: GroupSummaryEntry = {
+      groupId,
+      ...(body.groupName ? { groupName: body.groupName.trim() } : {}),
+      ...(body.pictureUrl ? { pictureUrl: body.pictureUrl.trim() } : {}),
+    };
+
+    this.groupSummaryCache.set(groupId, {
+      summary,
+      expiresAt: now + PROFILE_CACHE_TTL_MS,
+    });
+
+    return summary;
+  }
+
+  private buildProfilePath(
+    event: LineWebhookEvent,
+    userId: string,
+  ): string | undefined {
+    const encodedUserId = encodeURIComponent(userId);
+
+    if (event.source.groupId) {
+      const encodedGroupId = encodeURIComponent(event.source.groupId);
+      return `${LINE_GROUP_MEMBER_PROFILE_API}/${encodedGroupId}/member/${encodedUserId}`;
+    }
+
+    if (event.source.roomId) {
+      const encodedRoomId = encodeURIComponent(event.source.roomId);
+      return `${LINE_ROOM_MEMBER_PROFILE_API}/${encodedRoomId}/member/${encodedUserId}`;
+    }
+
+    return `${LINE_USER_PROFILE_API}/${encodedUserId}`;
   }
 }
 
@@ -183,19 +397,46 @@ class GeminiClient {
   }
 }
 
-const buildConversationId = (event: LineWebhookEvent) => {
+const buildConversationContext = (
+  event: LineWebhookEvent,
+): ConversationContext => {
   const source = event.source;
-  if (source.groupId) return `group:${source.groupId}`;
-  if (source.roomId) return `room:${source.roomId}`;
-  if (source.userId) return `user:${source.userId}`;
-  return "unknown";
+  if (source.groupId) {
+    return {
+      conversationId: `group:${source.groupId}`,
+      sourceType: "group",
+      sourceId: source.groupId,
+    };
+  }
+
+  if (source.roomId) {
+    return {
+      conversationId: `room:${source.roomId}`,
+      sourceType: "room",
+      sourceId: source.roomId,
+    };
+  }
+
+  if (source.userId) {
+    return {
+      conversationId: `user:${source.userId}`,
+      sourceType: "user",
+      sourceId: source.userId,
+    };
+  }
+
+  return {
+    conversationId: "unknown",
+    sourceType: "unknown",
+    sourceId: null,
+  };
 };
 
 const formatMessages = (messages: MessageEntry[]) =>
   messages
     .map((entry) => {
       const time = new Date(entry.timestamp).toISOString();
-      const user = entry.userId ?? "unknown";
+      const user = entry.displayName ?? "unknown";
       return `${time} | ${user} | ${entry.text}`;
     })
     .join("\n");
@@ -209,16 +450,12 @@ export class LineWebhookService {
   private gemini: GeminiClient;
 
   constructor(
+    db: Kysely<Database>,
     private lineConfig: LineConfig,
     private geminiConfig: GeminiConfig,
     private summaryLimit: number,
-    historyLimit: number,
-    conversationTtlMinutes: number,
-    maxConversations: number,
   ) {
-    const ttlMs =
-      conversationTtlMinutes > 0 ? conversationTtlMinutes * 60_000 : 0;
-    this.store = new MessageStore(historyLimit, ttlMs, maxConversations);
+    this.store = new MessageStore(db);
     this.lineClient = new LineClient(lineConfig.channelAccessToken);
     this.gemini = new GeminiClient(geminiConfig);
   }
@@ -249,19 +486,30 @@ export class LineWebhookService {
     if (!event.message || event.message.type !== "text") return;
 
     const text = event.message.text?.trim() ?? "";
-    const conversationId = buildConversationId(event);
+    const conversation = buildConversationContext(event);
     const timestamp = event.timestamp ?? Date.now();
+    const [displayName, groupSummary] = await Promise.all([
+      this.lineClient.getDisplayName(event),
+      event.source.groupId
+        ? this.lineClient.getGroupSummary(event.source.groupId)
+        : Promise.resolve(undefined),
+    ]);
 
-    this.store.add(conversationId, {
-      userId: event.source.userId,
-      text,
-      timestamp,
-    });
+    await this.store.add(
+      conversation,
+      {
+        userId: event.source.userId,
+        displayName,
+        text,
+        timestamp,
+      },
+      groupSummary,
+    );
 
     if (!event.replyToken) return;
 
     if (/^\/summary\b/i.test(text)) {
-      await this.handleSummary(event, conversationId);
+      await this.handleSummary(event, conversation.conversationId);
       return;
     }
 
@@ -276,7 +524,7 @@ export class LineWebhookService {
     }
 
     if (/^\/research\b/i.test(text)) {
-      await this.handleResearch(event, conversationId, text);
+      await this.handleResearch(event, conversation.conversationId, text);
     }
   }
 
@@ -286,10 +534,22 @@ export class LineWebhookService {
 
   private async handleFortune(event: LineWebhookEvent) {
     const prompt = [
-      "คุณคือหมอดูสายกวนในแชตกลุ่ม LINE",
-      "ทำนายดวงจากดวงดาวที่เรียกกันในวันนี้",
-      "ตอบเป็นภาษาไทยแบบกวนๆ สุภาพ ไม่หยาบคาย",
-      "ความยาว 1-2 ประโยค ไม่เกิน 120 ตัวอักษร",
+      "คุณคือหมอดู AI สายตลก ที่ให้คำทำนายแบบขำ ๆ เพื่อความบันเทิงเท่านั้น สไตล์การทำนายของคุณต้อง สนุก กวน ๆ น่ารัก และไม่จริงจัง",
+      "บุคลิกของหมอดู",
+      "- พูดเหมือนหมอดูที่มั่นใจเกินเหตุ",
+      "- ใช้คำเปรียบเทียบแปลก ๆ หรือเกินจริง",
+      "- มีมุกตลกหรือความกวนเล็ก ๆ ในคำทำนาย",
+      "- โทนเป็นมิตร ไม่ล้อเลียนหรือทำร้ายจิตใจ",
+      "กฎสำคัญ",
+      "- การดูดวงทั้งหมดเป็น เพื่อความบันเทิงเท่านั้น",
+      "- ห้ามให้คำแนะนำที่จริงจังเกี่ยวกับ:",
+      "1.สุขภาพ",
+      "2.การเงิน",
+      "3.กฎหมาย",
+      "4.การตัดสินใจชีวิตใหญ่ ๆ",
+      "- หลีกเลี่ยงคำทำนายที่ทำให้ผู้ใช้เครียดหรือกังวล",
+      "- หากต้องพูดถึงเรื่องลบ ให้ทำในโทนขำ ๆ หรือเบา ๆ",
+      "ตอบสั้น ๆ ในรูปแบบ 'ดวงวันนี้: <คำทำนาย>'",
     ].join("\n");
 
     const fortune = await this.gemini.generateText(prompt);
@@ -301,9 +561,9 @@ export class LineWebhookService {
   }
 
   private async handleSummary(event: LineWebhookEvent, conversationId: string) {
-    const history = this.store
-      .getRecent(conversationId, this.summaryLimit)
-      .filter((entry) => !/^\/summary\b/i.test(entry.text));
+    const history = (
+      await this.store.getRecent(conversationId, this.summaryLimit)
+    ).filter((entry) => !/^\/summary\b/i.test(entry.text));
 
     if (history.length === 0) {
       await this.lineClient.replyText(
@@ -314,10 +574,18 @@ export class LineWebhookService {
     }
 
     const prompt = [
-      'คุณคือ "เลขาหน้าห้อง" ที่สรุปแชตกลุ่ม LINE ให้สั้น กระชับ และเป็นภาษาไทย',
-      "ใช้เฉพาะข้อมูลที่ให้มา ห้ามเดาเพิ่ม",
-      "สรุปเป็นหัวข้อสั้นๆ พร้อมหัวข้อย่อยสั้นๆ 3-7 ข้อ",
-      'ปิดท้ายด้วย "ประเด็นค้าง" ถ้ามีคำถาม/การตัดสินใจที่ยังไม่ได้ข้อสรุป',
+      "คุณคือผู้ช่วย AI ที่เชี่ยวชาญในการสรุปบทสนทนาในกลุ่มแชท หน้าที่ของคุณคืออ่านบทสนทนา แล้วสรุปให้เข้าใจง่าย กระชับ และใช้งานได้จริง เป็นภาษาไทย",
+      "เป้าหมายของการสรุป",
+      "- สรุป หัวข้อหลัก ที่ถูกพูดถึง",
+      "- ระบุ ข้อสรุปหรือการตัดสินใจ",
+      "- ดึง งานที่ต้องทำต่อ (Action items) และผู้รับผิดชอบ (ถ้ามี)",
+      "- ตัดบทสนทนาที่เป็นเรื่องเล่น ๆ หรือไม่เกี่ยวข้องออก",
+      "- ทำให้สรุปอ่านง่ายและกระชับ",
+      "กฎการตอบ",
+      "- ใช้ภาษากลาง เข้าใจง่าย",
+      "- ห้ามแต่งข้อมูลเพิ่มจากที่ไม่มีในแชท",
+      "- หากข้อมูลไม่ชัดเจน ให้ระบุว่า “ไม่ชัดเจน”",
+      "- เขียนสรุปเป็นภาษาเดียวกับบทสนทนา",
       "",
       "แชตล่าสุด:",
       formatMessages(history),
@@ -343,7 +611,7 @@ export class LineWebhookService {
       return;
     }
 
-    const history = this.store.getRecent(conversationId, 30);
+    const history = await this.store.getRecent(conversationId, 30);
 
     const prompt = [
       "คุณคือผู้ช่วยหาข้อมูลจากเว็บและช่วยตัดสินใจในกลุ่ม LINE",

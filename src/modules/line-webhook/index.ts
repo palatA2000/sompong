@@ -2,8 +2,10 @@ import { Elysia } from "elysia";
 import { LineWebhookBody } from "./model.js";
 import { LineWebhookService } from "./service.js";
 import { config } from "../../config.js";
+import { db } from "../../db/index.js";
 
 const service = new LineWebhookService(
+  db,
   {
     channelSecret: config.lineChannelSecret,
     channelAccessToken: config.lineChannelAccessToken,
@@ -14,9 +16,6 @@ const service = new LineWebhookService(
     defaultTimezone: config.defaultTimezone,
   },
   config.summaryLimit,
-  config.historyLimit,
-  config.conversationTtlMinutes,
-  config.maxConversations,
 );
 
 export const lineWebhook = new Elysia({ name: "line-webhook" })

@@ -12,6 +12,7 @@ A minimal ElysiaJS webhook server for LINE Messaging API that uses Gemini to:
 
 ## Env
 Copy `.env.example` and fill in values:
+- `DATABASE_URL`
 - `LINE_CHANNEL_SECRET`
 - `LINE_CHANNEL_ACCESS_TOKEN`
 - `GEMINI_API_KEY`
@@ -27,10 +28,11 @@ Optional:
 ## Run
 ```bash
 bun install
+bun run db:migrate
 bun run dev
 ```
 
 ## Notes
-- Message history is stored in memory only. Use a database or cache for production.
-- In-memory cleanup evicts inactive conversations by TTL and caps total conversations.
-- `/research` answers from the model only (no live web search).
+- Message history is stored in PostgreSQL (`users`, `chats`, `chat_messages`) via Kysely.
+- Cleanup still applies TTL and max-conversation limits using database queries.
+- `/research` uses Gemini with web search grounding.
