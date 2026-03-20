@@ -4,6 +4,7 @@ export interface UsersTable {
   id: Generated<number>;
   line_user_id: string;
   display_name: string | null;
+  score: ColumnType<number, number | undefined, number | undefined>;
   created_at: ColumnType<Date, Date | string | undefined, never>;
   updated_at: ColumnType<
     Date,
@@ -61,7 +62,11 @@ export interface ScheduledMessagesTable {
   message_type: "textV2";
   timezone: string;
   start_at: ColumnType<Date, Date | string | undefined, never>;
-  end_at: ColumnType<Date, Date | string | undefined, Date | string | undefined>;
+  end_at: ColumnType<
+    Date,
+    Date | string | undefined,
+    Date | string | undefined
+  >;
   frequency_type: "once" | "daily" | "weekly" | "monthly" | "cron";
   frequency_interval: number | null;
   days_of_week: string | null;
@@ -69,7 +74,11 @@ export interface ScheduledMessagesTable {
   time_of_day: string | null;
   cron_expression: string | null;
   is_active: ColumnType<boolean, boolean | undefined, boolean | undefined>;
-  next_run_at: ColumnType<Date, Date | string | undefined, Date | string | undefined>;
+  next_run_at: ColumnType<
+    Date,
+    Date | string | undefined,
+    Date | string | undefined
+  >;
   created_at: ColumnType<Date, Date | string | undefined, never>;
   updated_at: ColumnType<
     Date,
@@ -88,6 +97,44 @@ export interface ScheduledMessageSubstitutionsTable {
   created_at: ColumnType<Date, Date | string | undefined, never>;
 }
 
+export interface QuizQuestionsTable {
+  id: Generated<number>;
+  emoji: string;
+  question_text: string;
+  generated_at: ColumnType<Date, Date | string | undefined, never>;
+  created_at: ColumnType<Date, Date | string | undefined, never>;
+  updated_at: ColumnType<
+    Date,
+    Date | string | undefined,
+    Date | string | undefined
+  >;
+}
+
+export interface QuizChoicesTable {
+  id: Generated<number>;
+  question_id: number;
+  choice_text: string;
+  choice_order: number;
+  is_correct: ColumnType<boolean, boolean | undefined, boolean | undefined>;
+}
+
+export interface QuizAttemptsTable {
+  id: Generated<number>;
+  question_id: number;
+  user_id: number;
+  group_id: number;
+  choice_id: number;
+  is_correct: boolean;
+  answered_at: ColumnType<Date, Date | string | undefined, never>;
+}
+
+export interface QuizSendsTable {
+  id: Generated<number>;
+  question_id: number;
+  group_id: number;
+  sent_at: ColumnType<Date, Date | string | undefined, never>;
+}
+
 export interface Database {
   users: UsersTable;
   groups: GroupsTable;
@@ -95,4 +142,8 @@ export interface Database {
   chat_messages: ChatMessagesTable;
   scheduled_messages: ScheduledMessagesTable;
   scheduled_message_substitutions: ScheduledMessageSubstitutionsTable;
+  quiz_questions: QuizQuestionsTable;
+  quiz_choices: QuizChoicesTable;
+  quiz_attempts: QuizAttemptsTable;
+  quiz_sends: QuizSendsTable;
 }
