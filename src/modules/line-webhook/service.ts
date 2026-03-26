@@ -7,6 +7,7 @@ import type {
   LineWebhookEvent,
   LineTextMessage,
   MessageEntry,
+  LineFlexMessage,
 } from "./model.js";
 
 export type LineConfig = {
@@ -33,6 +34,7 @@ const HELP_TEXT = [
   "/fortune - ดูดวงสั้นๆ",
   "/summary - สรุปบทสนทนาล่าสุด",
   "/research <คำถาม> - ค้นเว็บและสรุปคำตอบพร้อมอ้างอิง",
+  "/ทายเพลง - ทายเพลงจาก emoji",
 ].join("\n");
 
 type ConversationSourceType = "group" | "room" | "user" | "unknown";
@@ -218,7 +220,10 @@ class LineClient {
     return this.reply(replyToken, [{ type: "text", text }]);
   }
 
-  async reply(replyToken: string, messages: LineTextMessage[]) {
+  async reply(
+    replyToken: string,
+    messages: (LineTextMessage | LineFlexMessage)[],
+  ) {
     const response = await fetch(LINE_REPLY_API, {
       method: "POST",
       headers: {
@@ -454,6 +459,8 @@ export class LineWebhookService {
     private lineConfig: LineConfig,
     private geminiConfig: GeminiConfig,
     private summaryLimit: number,
+    private quizApiBaseUrl: string,
+    private quizApiKey: string,
   ) {
     this.store = new MessageStore(db);
     this.lineClient = new LineClient(lineConfig.channelAccessToken);
@@ -482,6 +489,10 @@ export class LineWebhookService {
   }
 
   private async handleEvent(event: LineWebhookEvent) {
+    if (event.type === "postback") {
+      await this.handlePostback(event);
+      return;
+    }
     if (event.type !== "message") return;
     if (!event.message || event.message.type !== "text") return;
 
@@ -525,6 +536,69 @@ export class LineWebhookService {
 
     if (/^\/research\b/i.test(text)) {
       await this.handleResearch(event, conversation.conversationId, text);
+      return;
+    }
+
+    if (/^\/(ทายเพลง)(\s|$)/i.test(text)) {
+      await this.handleQuiz(event);
+    }
+  }
+
+  private async handlePostback(event: LineWebhookEvent) {
+    if (!event.postback?.data) return;
+
+    const params = new URLSearchParams(event.postback.data);
+    const action = params.get("action");
+
+    if (action === "answer") {
+      const qid = params.get("qid");
+      const cid = params.get("cid");
+      if (!qid || !cid) return;
+
+      const lineUserId = event.source.userId ?? "";
+      const lineGroupId = event.source.groupId ?? "";
+
+      let result: {
+        correct: boolean;
+        already_answered: boolean;
+        score: number;
+      };
+      try {
+        const response = await fetch(
+          `${this.quizApiBaseUrl}/api/v1/quiz/answers`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Api-Key": this.quizApiKey,
+            },
+            body: JSON.stringify({
+              line_user_id: lineUserId,
+              line_group_id: lineGroupId,
+              question_id: Number(qid),
+              choice_id: Number(cid),
+            }),
+          },
+        );
+        if (!response.ok) return;
+        result = (await response.json()) as {
+          correct: boolean;
+          already_answered: boolean;
+          score: number;
+        };
+      } catch {
+        return;
+      }
+
+      if (result.already_answered) return;
+      if (!event.replyToken) return;
+
+      const displayName = await this.lineClient.getDisplayName(event);
+      const message = result.correct
+        ? `${displayName} ถูกต้อง! คะแนนของคุณ: ${result.score}`
+        : `${displayName} ผิด! คะแนนของคุณ: ${result.score}`;
+
+      await this.lineClient.replyText(event.replyToken, message);
     }
   }
 
@@ -595,6 +669,94 @@ export class LineWebhookService {
     const responseText = summary.trim() || "สรุปไม่สำเร็จ ลองใหม่อีกครั้งนะ";
 
     await this.lineClient.replyText(event.replyToken!, responseText);
+  }
+
+  private async handleQuiz(event: LineWebhookEvent) {
+    if (!event.replyToken) return;
+
+    type QuizQuestion = {
+      id: number;
+      emoji: string;
+      question_text: string;
+      choices: Array<{
+        id: number;
+        question_id: number;
+        choice_text: string;
+        choice_order: number;
+        is_correct: boolean;
+      }>;
+    };
+
+    let question: QuizQuestion;
+    try {
+      const response = await fetch(`${this.quizApiBaseUrl}/api/v1/quiz`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Key": this.quizApiKey,
+        },
+      });
+      if (!response.ok) {
+        await this.lineClient.replyText(
+          event.replyToken,
+          "ไม่สามารถโหลดคำถามได้ ลองใหม่อีกครั้ง",
+        );
+        return;
+      }
+      question = (await response.json()) as QuizQuestion;
+    } catch {
+      await this.lineClient.replyText(
+        event.replyToken,
+        "ไม่สามารถโหลดคำถามได้ ลองใหม่อีกครั้ง",
+      );
+      return;
+    }
+
+    const buttons = question.choices.map((choice) => ({
+      type: "button",
+      style: "primary",
+      action: {
+        type: "postback",
+        label: choice.choice_text,
+        data: `action=answer&qid=${question.id}&cid=${choice.id}`,
+      },
+    }));
+
+    const flexMessage: LineFlexMessage = {
+      type: "flex",
+      altText: "Emoji Quiz",
+      contents: {
+        type: "bubble",
+        body: {
+          type: "box",
+          layout: "vertical",
+          spacing: "md",
+          contents: [
+            {
+              type: "text",
+              text: question.emoji,
+              size: "xxl",
+              align: "center",
+            },
+            {
+              type: "text",
+              text: question.question_text,
+              wrap: true,
+              weight: "bold",
+              size: "md",
+            },
+          ],
+        },
+        footer: {
+          type: "box",
+          layout: "vertical",
+          spacing: "sm",
+          contents: buttons,
+        },
+      },
+    };
+
+    await this.lineClient.reply(event.replyToken, [flexMessage]);
   }
 
   private async handleResearch(

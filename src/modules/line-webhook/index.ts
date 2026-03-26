@@ -16,6 +16,8 @@ const service = new LineWebhookService(
     defaultTimezone: config.defaultTimezone,
   },
   config.summaryLimit,
+  config.quizApiBaseUrl,
+  config.quizApiKey,
 );
 
 export const lineWebhook = new Elysia({ name: "line-webhook" })

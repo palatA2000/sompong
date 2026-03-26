@@ -122,17 +122,9 @@ export interface QuizAttemptsTable {
   id: Generated<number>;
   question_id: number;
   user_id: number;
-  group_id: number;
   choice_id: number;
   is_correct: boolean;
   answered_at: ColumnType<Date, Date | string | undefined, never>;
-}
-
-export interface QuizSendsTable {
-  id: Generated<number>;
-  question_id: number;
-  group_id: number;
-  sent_at: ColumnType<Date, Date | string | undefined, never>;
 }
 
 export interface Database {
@@ -145,5 +137,4 @@ export interface Database {
   quiz_questions: QuizQuestionsTable;
   quiz_choices: QuizChoicesTable;
   quiz_attempts: QuizAttemptsTable;
-  quiz_sends: QuizSendsTable;
 }

@@ -21,4 +21,6 @@ export const config = {
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
   summaryLimit: parseNumber(process.env.SUMMARY_LIMIT, 80),
   defaultTimezone: process.env.DEFAULT_TIMEZONE ?? "Asia/Bangkok",
+  quizApiBaseUrl: requireEnv("QUIZ_API_BASE_URL"),
+  quizApiKey: requireEnv("QUIZ_API_KEY"),
 };

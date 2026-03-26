@@ -1,4 +1,4 @@
-import { t } from 'elysia'
+import { t } from "elysia";
 
 export const LineWebhookEvent = t.Object({
   type: t.String(),
@@ -9,33 +9,44 @@ export const LineWebhookEvent = t.Object({
     type: t.String(),
     userId: t.Optional(t.String()),
     groupId: t.Optional(t.String()),
-    roomId: t.Optional(t.String())
+    roomId: t.Optional(t.String()),
   }),
   message: t.Optional(
     t.Object({
       id: t.Optional(t.String()),
       type: t.String(),
-      text: t.Optional(t.String())
-    })
-  )
-})
+      text: t.Optional(t.String()),
+    }),
+  ),
+  postback: t.Optional(
+    t.Object({
+      data: t.String(),
+    }),
+  ),
+});
 
 export const LineWebhookBody = t.Object({
   destination: t.Optional(t.String()),
-  events: t.Array(LineWebhookEvent)
-})
+  events: t.Array(LineWebhookEvent),
+});
 
-export type LineWebhookBody = typeof LineWebhookBody.static
-export type LineWebhookEvent = typeof LineWebhookEvent.static
+export type LineWebhookBody = typeof LineWebhookBody.static;
+export type LineWebhookEvent = typeof LineWebhookEvent.static;
 
 export type LineTextMessage = {
-  type: 'text'
-  text: string
-}
+  type: "text";
+  text: string;
+};
+
+export type LineFlexMessage = {
+  type: "flex";
+  altText: string;
+  contents: Record<string, any>;
+};
 
 export type MessageEntry = {
-  userId?: string
-  displayName?: string
-  text: string
-  timestamp: number
-}
+  userId?: string;
+  displayName?: string;
+  text: string;
+  timestamp: number;
+};
